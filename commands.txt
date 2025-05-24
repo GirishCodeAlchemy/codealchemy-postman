@@ -1,0 +1,9 @@
+go mod init postman-go && go get fyne.io/fyne/v2 && go get github.com/PaesslerAG/jsonpath && go get github.com/tidwall/gjson && go get github.com/buger/jsonparser
+go get fyne.io/fyne/v2@v2.4.0 && go mod tidy
+
+
+Fyne (https://fyne.io/) — Modern, cross-platform, pure Go, easy to build and distribute.
+Wails (https://wails.io/) — Uses webview, but you requested no web frontend.
+Gio (https://gioui.org/) — Pure Go, but less mature for desktop apps than Fyne.
+
+
