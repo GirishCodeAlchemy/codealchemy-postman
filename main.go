@@ -19,6 +19,7 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/layout"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"github.com/PaesslerAG/jsonpath"
 )
@@ -175,12 +176,6 @@ func main() {
 		searchEntry, searchBtn, copyBtn,
 	)
 
-	responseTabs := container.NewAppTabs(
-		container.NewTabItem("JSON", container.NewVBox(responseControls, jsonResponseScroller)),
-		container.NewTabItem("Preview", widget.NewLabel("Preview will appear here.")),
-		container.NewTabItem("Visualize", widget.NewLabel("Visualization will appear here.")),
-	)
-
 	// Add response status and headers display
 	// statusLabel := widget.NewLabel("")
 	headersBox := widget.NewMultiLineEntry()
@@ -188,49 +183,162 @@ func main() {
 
 	// UI for workspaces/collections
 	workspaces, _ := loadWorkspaces()
-	workspaceNames := []string{}
-	for _, ws := range workspaces {
-		workspaceNames = append(workspaceNames, ws.Name)
-	}
-	workspaceSelect := widget.NewSelect(workspaceNames, nil)
-	if len(workspaceNames) > 0 {
-		workspaceSelect.SetSelected(workspaceNames[0])
-	}
-	collectionList := widget.NewList(
-		func() int {
-			if workspaceSelect.Selected == "" {
-				return 0
-			}
-			for _, ws := range workspaces {
-				if ws.Name == workspaceSelect.Selected {
-					return len(ws.Collections)
-				}
-			}
-			return 0
-		},
-		func() fyne.CanvasObject {
-			return widget.NewLabel("")
-		},
-		func(i widget.ListItemID, o fyne.CanvasObject) {
-			for _, ws := range workspaces {
-				if ws.Name == workspaceSelect.Selected {
-					if i < len(ws.Collections) {
-						col := ws.Collections[i]
-						label := o.(*widget.Label)
-						label.SetText(col.Name)
-					}
-				}
-			}
-		},
-	)
 
 	// Track selected collection index
 	var selectedCollectionIdx int = -1
 
-	// Request list for selected collection
-	requestList := widget.NewList(
+	// Forward declare UI elements that will be referenced in functions
+	var workspaceSelect *widget.Select
+	var collectionSelect *widget.Select
+	var requestList *widget.List
+
+	// Workspace management functions
+	createNewWorkspace := func() {
+		entry := widget.NewEntry()
+		form := dialog.NewForm("New Workspace", "Create", "Cancel", []*widget.FormItem{
+			widget.NewFormItem("Workspace Name", entry),
+		}, func(ok bool) {
+			if !ok || entry.Text == "" {
+				return
+			}
+			workspaces = append(workspaces, Workspace{Name: entry.Text, Collections: []Collection{}})
+			err := saveWorkspaces(workspaces)
+			if err == nil {
+				workspaceNames := []string{"+ New Workspace"}
+				for _, ws := range workspaces {
+					workspaceNames = append(workspaceNames, ws.Name)
+				}
+				workspaceSelect.Options = workspaceNames
+				workspaceSelect.SetSelected(entry.Text)
+				collectionSelect.Options = []string{"+ New Collection"}
+				collectionSelect.SetSelected("")
+				requestList.Refresh()
+			}
+		}, w)
+		form.Show()
+	}
+
+	// Collection management functions
+	createNewCollection := func() {
+		if workspaceSelect.Selected == "" || workspaceSelect.Selected == "+ New Workspace" {
+			dialog.ShowInformation("No Workspace", "Select a workspace first.", w)
+			return
+		}
+		entry := widget.NewEntry()
+		form := dialog.NewForm("New Collection", "Create", "Cancel", []*widget.FormItem{
+			widget.NewFormItem("Collection Name", entry),
+		}, func(ok bool) {
+			if !ok || entry.Text == "" {
+				return
+			}
+			for i, ws := range workspaces {
+				if ws.Name == workspaceSelect.Selected {
+					workspaces[i].Collections = append(workspaces[i].Collections, Collection{Name: entry.Text})
+					err := saveWorkspaces(workspaces)
+					if err == nil {
+						// Update collection dropdown options
+						collectionOptions := []string{"+ New Collection"}
+						for _, col := range workspaces[i].Collections {
+							collectionOptions = append(collectionOptions, col.Name)
+						}
+						collectionSelect.Options = collectionOptions
+						collectionSelect.SetSelected(entry.Text)
+						selectedCollectionIdx = len(workspaces[i].Collections) - 1
+						requestList.Refresh()
+					}
+				}
+			}
+		}, w)
+		form.Show()
+	}
+
+	// Request management functions
+	editRequestName := func(reqIdx int) {
+		if workspaceSelect.Selected == "" || workspaceSelect.Selected == "+ New Workspace" || selectedCollectionIdx < 0 {
+			return
+		}
+		wsIdx := -1
+		for i, ws := range workspaces {
+			if ws.Name == workspaceSelect.Selected {
+				wsIdx = i
+				break
+			}
+		}
+		if wsIdx == -1 || selectedCollectionIdx >= len(workspaces[wsIdx].Collections) {
+			return
+		}
+
+		coll := &workspaces[wsIdx].Collections[selectedCollectionIdx]
+		if reqIdx >= len(coll.Requests) {
+			return
+		}
+
+		entry := widget.NewEntry()
+		entry.SetText(coll.Requests[reqIdx].Name)
+		form := dialog.NewForm("Edit Request Name", "Save", "Cancel", []*widget.FormItem{
+			widget.NewFormItem("Request Name", entry),
+		}, func(ok bool) {
+			if !ok || entry.Text == "" {
+				return
+			}
+			coll.Requests[reqIdx].Name = entry.Text
+			err := saveWorkspaces(workspaces)
+			if err == nil {
+				requestList.Refresh()
+			}
+		}, w)
+		form.Show()
+	}
+
+	deleteRequest := func(reqIdx int) {
+		if workspaceSelect.Selected == "" || workspaceSelect.Selected == "+ New Workspace" || selectedCollectionIdx < 0 {
+			return
+		}
+		wsIdx := -1
+		for i, ws := range workspaces {
+			if ws.Name == workspaceSelect.Selected {
+				wsIdx = i
+				break
+			}
+		}
+		if wsIdx == -1 || selectedCollectionIdx >= len(workspaces[wsIdx].Collections) {
+			return
+		}
+
+		coll := &workspaces[wsIdx].Collections[selectedCollectionIdx]
+		if reqIdx >= len(coll.Requests) {
+			return
+		}
+
+		reqName := coll.Requests[reqIdx].Name
+		dialog.ShowConfirm("Delete Request",
+			fmt.Sprintf("Are you sure you want to delete the request '%s'?", reqName),
+			func(confirmed bool) {
+				if confirmed {
+					// Remove the request from the slice
+					coll.Requests = append(coll.Requests[:reqIdx], coll.Requests[reqIdx+1:]...)
+					err := saveWorkspaces(workspaces)
+					if err == nil {
+						requestList.Refresh()
+					}
+				}
+			}, w)
+	}
+
+	// Create workspace dropdown
+	workspaceNames := []string{"+ New Workspace"}
+	for _, ws := range workspaces {
+		workspaceNames = append(workspaceNames, ws.Name)
+	}
+	workspaceSelect = widget.NewSelect(workspaceNames, nil)
+
+	// Collection dropdown
+	collectionSelect = widget.NewSelect([]string{"+ New Collection"}, nil)
+
+	// Request list for selected collection with edit/delete functionality
+	requestList = widget.NewList(
 		func() int {
-			if workspaceSelect.Selected == "" || selectedCollectionIdx < 0 {
+			if workspaceSelect.Selected == "" || workspaceSelect.Selected == "+ New Workspace" || selectedCollectionIdx < 0 {
 				return 0
 			}
 			for _, ws := range workspaces {
@@ -243,22 +351,53 @@ func main() {
 			return 0
 		},
 		func() fyne.CanvasObject {
-			return widget.NewLabel("")
+			// Create a container with request name, edit button, and delete button
+			nameLabel := widget.NewLabel("")
+			editBtn := widget.NewButtonWithIcon("", theme.DocumentCreateIcon(), nil)
+			deleteBtn := widget.NewButtonWithIcon("", theme.DeleteIcon(), nil)
+
+			editBtn.Resize(fyne.NewSize(24, 24))
+			deleteBtn.Resize(fyne.NewSize(24, 24))
+
+			return container.NewBorder(nil, nil, nil,
+				container.NewHBox(editBtn, deleteBtn),
+				nameLabel)
 		},
 		func(i widget.ListItemID, o fyne.CanvasObject) {
+			// Cast to fyne.Container instead of container.Border
+			containerObj := o.(*fyne.Container)
+
+			// In a border container, the main object is at index 0, and the trailing object (buttons) is at index 1
+			nameLabel := containerObj.Objects[0].(*widget.Label)
+			buttonContainer := containerObj.Objects[1].(*fyne.Container)
+			editBtn := buttonContainer.Objects[0].(*widget.Button)
+			deleteBtn := buttonContainer.Objects[1].(*widget.Button)
+
 			for _, ws := range workspaces {
 				if ws.Name == workspaceSelect.Selected {
 					if selectedCollectionIdx < len(ws.Collections) {
 						requests := ws.Collections[selectedCollectionIdx].Requests
 						if i < len(requests) {
-							label := o.(*widget.Label)
-							label.SetText(requests[i].Name)
+							nameLabel.SetText(requests[i].Name)
+
+							// Set up edit button callback (capture i in closure)
+							reqIdx := i
+							editBtn.OnTapped = func() {
+								editRequestName(reqIdx)
+							}
+
+							// Set up delete button callback (capture i in closure)
+							deleteBtn.OnTapped = func() {
+								deleteRequest(reqIdx)
+							}
 						}
 					}
 				}
 			}
 		},
 	)
+
+	// Set up click handler to load request
 	requestList.OnSelected = func(id int) {
 		// Load the request into the form
 		for _, ws := range workspaces {
@@ -280,10 +419,66 @@ func main() {
 		}
 	}
 
-	collectionList.OnSelected = func(id int) {
-		selectedCollectionIdx = id
-		// Refresh request list when collection changes
+	// Set up workspace selection callback after all widgets are created
+	workspaceSelect.OnChanged = func(selected string) {
+		if selected == "+ New Workspace" {
+			createNewWorkspace()
+			return
+		}
+		// Update collection dropdown when workspace changes
+		selectedCollectionIdx = -1
+		collectionOptions := []string{"+ New Collection"}
+		for _, ws := range workspaces {
+			if ws.Name == selected {
+				for _, col := range ws.Collections {
+					collectionOptions = append(collectionOptions, col.Name)
+				}
+				break
+			}
+		}
+		collectionSelect.Options = collectionOptions
+		collectionSelect.SetSelected("")
 		requestList.Refresh()
+	}
+
+	// Set up collection selection callback
+	collectionSelect.OnChanged = func(selected string) {
+		if selected == "+ New Collection" {
+			createNewCollection()
+			return
+		}
+		// Find the collection index
+		selectedCollectionIdx = -1
+		for _, ws := range workspaces {
+			if ws.Name == workspaceSelect.Selected {
+				for i, col := range ws.Collections {
+					if col.Name == selected {
+						selectedCollectionIdx = i
+						break
+					}
+				}
+				break
+			}
+		}
+		requestList.Refresh()
+	}
+
+	if len(workspaceNames) > 1 {
+		workspaceSelect.SetSelected(workspaceNames[1]) // Select first actual workspace, not "+ New Workspace"
+	}
+
+	// Initialize collection options for the selected workspace
+	if workspaceSelect.Selected != "" && workspaceSelect.Selected != "+ New Workspace" {
+		collectionOptions := []string{"+ New Collection"}
+		for _, ws := range workspaces {
+			if ws.Name == workspaceSelect.Selected {
+				for _, col := range ws.Collections {
+					collectionOptions = append(collectionOptions, col.Name)
+				}
+				break
+			}
+		}
+		collectionSelect.Options = collectionOptions
 	}
 
 	// Flows canvas placeholder
@@ -403,12 +598,12 @@ func main() {
 
 	// Add buttons for saving/loading requests and collections
 	saveReqBtn := widget.NewButton("Save Request", func() {
-		if workspaceSelect.Selected == "" {
+		if workspaceSelect.Selected == "" || workspaceSelect.Selected == "+ New Workspace" {
 			dialog.ShowInformation("No Workspace", "Please select a workspace.", w)
 			return
 		}
-		if collectionList.Length() == 0 {
-			dialog.ShowInformation("No Collection", "Please add a collection in this workspace.", w)
+		if selectedCollectionIdx < 0 {
+			dialog.ShowInformation("No Collection", "Please select a collection.", w)
 			return
 		}
 		wsIdx := -1
@@ -422,7 +617,7 @@ func main() {
 			dialog.ShowError(fmt.Errorf("Workspace not found"), w)
 			return
 		}
-		if selectedCollectionIdx < 0 {
+		if selectedCollectionIdx >= len(workspaces[wsIdx].Collections) {
 			dialog.ShowInformation("No Collection Selected", "Please select a collection.", w)
 			return
 		}
@@ -445,6 +640,7 @@ func main() {
 			dialog.ShowError(err, w)
 			return
 		}
+		requestList.Refresh()
 		dialog.ShowInformation("Saved", "Request saved to collection.", w)
 	})
 
@@ -492,53 +688,8 @@ func main() {
 		d.Show()
 	})
 
-	// Add workspace and collection creation/removal
-	addWorkspaceBtn := widget.NewButton("+ Workspace", func() {
-		entry := widget.NewEntry()
-		form := dialog.NewForm("New Workspace", "Create", "Cancel", []*widget.FormItem{
-			widget.NewFormItem("Workspace Name", entry),
-		}, func(ok bool) {
-			if !ok || entry.Text == "" {
-				return
-			}
-			workspaces = append(workspaces, Workspace{Name: entry.Text, Collections: []Collection{}})
-			err := saveWorkspaces(workspaces)
-			if err == nil {
-				workspaceNames = append(workspaceNames, entry.Text)
-				workspaceSelect.Options = workspaceNames
-				workspaceSelect.SetSelected(entry.Text)
-			}
-		}, w)
-		form.Show()
-	})
-
-	addCollectionBtn := widget.NewButton("+ Collection", func() {
-		if workspaceSelect.Selected == "" {
-			dialog.ShowInformation("No Workspace", "Select a workspace first.", w)
-			return
-		}
-		entry := widget.NewEntry()
-		form := dialog.NewForm("New Collection", "Create", "Cancel", []*widget.FormItem{
-			widget.NewFormItem("Collection Name", entry),
-		}, func(ok bool) {
-			if !ok || entry.Text == "" {
-				return
-			}
-			for i, ws := range workspaces {
-				if ws.Name == workspaceSelect.Selected {
-					workspaces[i].Collections = append(workspaces[i].Collections, Collection{Name: entry.Text})
-					err := saveWorkspaces(workspaces)
-					if err == nil {
-						collectionList.Refresh()
-					}
-				}
-			}
-		}, w)
-		form.Show()
-	})
-
-	// Import/Export Postman Collection
-	importBtn := widget.NewButton("Import Postman JSON", func() {
+	// Import/Export Dropdown Functions
+	importPostmanJSON := func() {
 		dialog.ShowFileOpen(func(reader fyne.URIReadCloser, err error) {
 			if err != nil || reader == nil {
 				return
@@ -598,13 +749,21 @@ func main() {
 					}
 					workspaces[i].Collections = append(workspaces[i].Collections, col)
 					_ = saveWorkspaces(workspaces)
-					collectionList.Refresh()
+					// Update collection dropdown options
+					collectionOptions := []string{"+ New Collection"}
+					for _, col := range workspaces[i].Collections {
+						collectionOptions = append(collectionOptions, col.Name)
+					}
+					collectionSelect.Options = collectionOptions
+					collectionSelect.SetSelected(col.Name)
+					selectedCollectionIdx = len(workspaces[i].Collections) - 1
+					requestList.Refresh()
 				}
 			}
 		}, w)
-	})
+	}
 
-	exportBtn := widget.NewButton("Export Collection as JSON", func() {
+	exportCollectionJSON := func() {
 		if workspaceSelect.Selected == "" || selectedCollectionIdx < 0 {
 			dialog.ShowInformation("Select", "Select a workspace and collection.", w)
 			return
@@ -659,19 +818,67 @@ func main() {
 				dialog.ShowError(fmt.Errorf("Write error: %v", err), w)
 			}
 		}, w)
+	}
+
+	// Import Dropdown
+	importOptions := []string{"Postman Collection JSON"}
+	var importSelect *widget.Select
+	importSelect = widget.NewSelect(importOptions, func(selected string) {
+		switch selected {
+		case "Postman Collection JSON":
+			importPostmanJSON()
+		}
+		// Reset selection after action
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			importSelect.SetSelected("")
+		}()
 	})
+	importSelect.PlaceHolder = "Import..."
+
+	// Export Dropdown
+	exportOptions := []string{"Collection as JSON"}
+	var exportSelect *widget.Select
+	exportSelect = widget.NewSelect(exportOptions, func(selected string) {
+		switch selected {
+		case "Collection as JSON":
+			exportCollectionJSON()
+		}
+		// Reset selection after action
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			exportSelect.SetSelected("")
+		}()
+	})
+	exportSelect.PlaceHolder = "Export..."
 
 	// --- UI Layout Improvements ---
 	// Sidebar: vertical, with clear sectioning and spacing
 	sidebar := container.NewVBox(
-		container.NewHBox(addWorkspaceBtn, layout.NewSpacer(), addCollectionBtn),
-		widget.NewLabelWithStyle("Workspaces", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-		workspaceSelect,
+		// Top Row: Workspaces section with dropdown, and Import/Export dropdowns
+		container.NewHBox(
+			container.NewVBox(
+				widget.NewLabelWithStyle("Workspaces", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+				workspaceSelect,
+			),
+			layout.NewSpacer(),
+			container.NewVBox(
+				importSelect,
+				exportSelect,
+			),
+		),
+		widget.NewSeparator(),
+		// Collections section with dropdown
 		widget.NewLabelWithStyle("Collections", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-		container.NewVBox(collectionList),
+		collectionSelect,
+		widget.NewSeparator(),
+		// Requests section with scrollable list (limited to 10 items visible)
 		widget.NewLabelWithStyle("Requests", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-		container.NewVBox(requestList),
-		container.NewHBox(importBtn, exportBtn),
+		func() *container.Scroll {
+			scroll := container.NewVScroll(requestList)
+			scroll.SetMinSize(fyne.NewSize(250, 300)) // Limit height to show ~10 items
+			return scroll
+		}(),
 		widget.NewSeparator(),
 		flowsLabel,
 	)
@@ -703,7 +910,7 @@ func main() {
 		widget.NewLabelWithStyle("JSONata Query", fyne.TextAlignLeading, fyne.TextStyle{}),
 		jsonataSplit,
 	))
-	responseTabs = container.NewAppTabs(
+	responseTabs := container.NewAppTabs(
 		container.NewTabItem("JSON", container.NewVBox(responseControls, jsonResponseScroller)),
 		container.NewTabItem("Preview", widget.NewLabel("Preview will appear here.")),
 		container.NewTabItem("Visualize", widget.NewLabel("Visualization will appear here.")),
