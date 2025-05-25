@@ -9,9 +9,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
+
+	"image/color"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/layout"
@@ -94,7 +98,6 @@ func main() {
 	// URL entry
 	urlEntry := widget.NewEntry()
 	urlEntry.SetPlaceHolder("Enter request URL...")
-	// urlEntry.Resize(fyne.NewSize(900, urlEntry.MinSize().Height)) // Increase width
 
 	// Headers and body
 	headersEntry := widget.NewMultiLineEntry()
@@ -106,17 +109,70 @@ func main() {
 	sendBtn := widget.NewButton("Send", func() {})
 
 	// Response tabs
+	// jsonResponse := widget.NewMultiLineEntry()
+	// jsonResponse.SetPlaceHolder("JSON response will appear here...")
+	// jsonResponse.SetMinRowsVisible(60)
+	// jsonResponse.Wrapping = fyne.TextWrapBreak
+	// jsonResponse.Disable()
 	jsonResponse := widget.NewMultiLineEntry()
 	jsonResponse.SetPlaceHolder("JSON response will appear here...")
-	// jsonResponse.Resize(fyne.NewSize(900, 350))
+	jsonResponse.SetMinRowsVisible(30)
+	jsonResponse.Wrapping = fyne.TextWrapBreak // Keep for multi-line JSON
+	jsonResponse.Enable()                      // Ensure it is enabled for rendering
+	jsonResponseScroller := container.NewVScroll(jsonResponse)
+	jsonResponseScroller.SetMinSize(fyne.NewSize(1000, 600))
+
+	// Add response status, time, size display, and search/copy controls
+	responseMeta := widget.NewLabel("") // Will be set after each request
+	// responseStatus := widget.NewLabel("") // Color-coded status code
+	// Instead, use a colored rectangle and label for status
+	statusColor := canvas.NewRectangle(&color.NRGBA{0, 0, 0, 255})
+	statusColor.SetMinSize(fyne.NewSize(18, 18))
+	responseStatus := widget.NewLabel("")
+	responseStatusContainer := container.NewHBox(statusColor, responseStatus)
+
+	searchEntry := widget.NewEntry()
+	searchEntry.SetPlaceHolder("Search in response...")
+	copyBtn := widget.NewButton("Copy", func() {
+		w.Clipboard().SetContent(jsonResponse.Text)
+		dialog.ShowInformation("Copied", "Response copied to clipboard!", w)
+	})
+	searchBtn := widget.NewButton("Find", func() {
+		query := searchEntry.Text
+		if query == "" {
+			return
+		}
+		text := jsonResponse.Text
+		idx := strings.Index(strings.ToLower(text), strings.ToLower(query))
+		if idx >= 0 {
+			before := text[:idx]
+			row := strings.Count(before, "\n")
+			col := idx - strings.LastIndex(before, "\n") - 1
+			if strings.LastIndex(before, "\n") == -1 {
+				col = idx
+			}
+			jsonResponse.CursorRow = row
+			jsonResponse.CursorColumn = col
+			jsonResponse.Refresh()
+		} else {
+			dialog.ShowInformation("Not found", "Text not found in response.", w)
+		}
+	})
+	responseControls := container.NewHBox(
+		responseStatusContainer,
+		responseMeta,
+		layout.NewSpacer(),
+		searchEntry, searchBtn, copyBtn,
+	)
+
 	responseTabs := container.NewAppTabs(
-		container.NewTabItem("JSON", jsonResponse),
+		container.NewTabItem("JSON", container.NewVBox(responseControls, jsonResponseScroller)),
 		container.NewTabItem("Preview", widget.NewLabel("Preview will appear here.")),
 		container.NewTabItem("Visualize", widget.NewLabel("Visualization will appear here.")),
 	)
 
 	// Add response status and headers display
-	statusLabel := widget.NewLabel("")
+	// statusLabel := widget.NewLabel("")
 	headersBox := widget.NewMultiLineEntry()
 	headersBox.SetPlaceHolder("Response headers will appear here...")
 
@@ -160,8 +216,64 @@ func main() {
 
 	// Track selected collection index
 	var selectedCollectionIdx int = -1
+
+	// Request list for selected collection
+	requestList := widget.NewList(
+		func() int {
+			if workspaceSelect.Selected == "" || selectedCollectionIdx < 0 {
+				return 0
+			}
+			for _, ws := range workspaces {
+				if ws.Name == workspaceSelect.Selected {
+					if selectedCollectionIdx < len(ws.Collections) {
+						return len(ws.Collections[selectedCollectionIdx].Requests)
+					}
+				}
+			}
+			return 0
+		},
+		func() fyne.CanvasObject {
+			return widget.NewLabel("")
+		},
+		func(i widget.ListItemID, o fyne.CanvasObject) {
+			for _, ws := range workspaces {
+				if ws.Name == workspaceSelect.Selected {
+					if selectedCollectionIdx < len(ws.Collections) {
+						requests := ws.Collections[selectedCollectionIdx].Requests
+						if i < len(requests) {
+							label := o.(*widget.Label)
+							label.SetText(requests[i].Name)
+						}
+					}
+				}
+			}
+		},
+	)
+	requestList.OnSelected = func(id int) {
+		// Load the request into the form
+		for _, ws := range workspaces {
+			if ws.Name == workspaceSelect.Selected {
+				if selectedCollectionIdx < len(ws.Collections) {
+					requests := ws.Collections[selectedCollectionIdx].Requests
+					if id < len(requests) {
+						r := requests[id]
+						methodSelect.SetSelected(r.Method)
+						urlEntry.SetText(r.URL)
+						headersEntry.SetText("")
+						for k, v := range r.Headers {
+							headersEntry.SetText(headersEntry.Text + k + ": " + v + "\n")
+						}
+						bodyEntry.SetText(r.Body)
+					}
+				}
+			}
+		}
+	}
+
 	collectionList.OnSelected = func(id int) {
 		selectedCollectionIdx = id
+		// Refresh request list when collection changes
+		requestList.Refresh()
 	}
 
 	// Flows canvas placeholder
@@ -195,44 +307,88 @@ func main() {
 
 		var req *http.Request
 		var err error
+		var reqSize int
 		if method == "GET" || method == "DELETE" || method == "HEAD" || method == "OPTIONS" {
 			req, err = http.NewRequest(method, url, nil)
+			reqSize = 0
 		} else {
-			req, err = http.NewRequest(method, url, bytes.NewBufferString(body))
+			bodyBytes := []byte(body)
+			req, err = http.NewRequest(method, url, bytes.NewBuffer(bodyBytes))
+			reqSize = len(bodyBytes)
 		}
 		if err != nil {
 			jsonResponse.SetText(fmt.Sprintf("Request error: %v", err))
-			statusLabel.SetText("")
+			// statusLabel.SetText("")
 			headersBox.SetText("")
+			responseMeta.SetText("")
 			return
 		}
 		for k, v := range headers {
 			req.Header[k] = v
 		}
 		client := &http.Client{}
+		startTime := time.Now()
 		resp, err := client.Do(req)
+		elapsed := time.Since(startTime)
 		if err != nil {
 			jsonResponse.SetText(fmt.Sprintf("HTTP error: %v", err))
-			statusLabel.SetText("")
+			// statusLabel.SetText("")
 			headersBox.SetText("")
+			responseMeta.SetText("")
 			return
 		}
 		defer resp.Body.Close()
 		respBody, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
 			jsonResponse.SetText(fmt.Sprintf("Read error: %v", err))
-			statusLabel.SetText("")
+			// statusLabel.SetText("")
 			headersBox.SetText("")
+			responseMeta.SetText("")
 			return
 		}
-		jsonResponse.SetText(string(respBody))
-		statusLabel.SetText(fmt.Sprintf("Status: %d %s", resp.StatusCode, resp.Status))
+		// Try to pretty-print JSON
+		var prettyJSON bytes.Buffer
+		if json.Valid(respBody) {
+			err = json.Indent(&prettyJSON, respBody, "", "    ") // 4 spaces
+			if err == nil {
+				jsonResponse.SetText(prettyJSON.String())
+			} else {
+				jsonResponse.SetText(string(respBody))
+			}
+		} else {
+			jsonResponse.SetText(string(respBody))
+		}
+		// Status label (for headers panel)
+		// statusLabel.SetText(fmt.Sprintf("Status: %d %s", resp.StatusCode, resp.Status))
 		// Format response headers
 		headersStr := ""
 		for k, v := range resp.Header {
 			headersStr += fmt.Sprintf("%s: %s\n", k, strings.Join(v, ", "))
 		}
 		headersBox.SetText(headersStr)
+		// Set response meta info
+		respSize := len(respBody)
+		responseMeta.SetText(fmt.Sprintf("%d ms    Req: %.2f KB    Resp: %.2f KB",
+			elapsed.Milliseconds(),
+			float64(reqSize)/1024.0,
+			float64(respSize)/1024.0,
+		))
+		// Status code indicator with emoji and text (no color/style)
+		var statusText string
+		switch {
+		case resp.StatusCode >= 200 && resp.StatusCode < 300:
+			statusColor.FillColor = color.NRGBA{0, 200, 0, 255} // Green
+			statusText = fmt.Sprintf("✅ %d OK", resp.StatusCode)
+		case resp.StatusCode >= 400:
+			statusColor.FillColor = color.NRGBA{200, 0, 0, 255} // Red
+			statusText = fmt.Sprintf("🔴 %d Error", resp.StatusCode)
+		default:
+			statusColor.FillColor = color.NRGBA{200, 200, 0, 255} // Yellow
+			statusText = fmt.Sprintf("🟡 %d", resp.StatusCode)
+		}
+		statusColor.Refresh()
+		responseStatus.SetText(statusText)
+		responseStatus.Refresh()
 	}
 
 	// Add buttons for saving/loading requests and collections
@@ -246,7 +402,6 @@ func main() {
 			return
 		}
 		wsIdx := -1
-		colIdx := -1
 		for i, ws := range workspaces {
 			if ws.Name == workspaceSelect.Selected {
 				wsIdx = i
@@ -261,7 +416,7 @@ func main() {
 			dialog.ShowInformation("No Collection Selected", "Please select a collection.", w)
 			return
 		}
-		colIdx = selectedCollectionIdx
+		colIdx := selectedCollectionIdx
 		// Build request
 		headersMap := map[string]string{}
 		for k, v := range parseHeaders(headersEntry.Text) {
@@ -329,18 +484,22 @@ func main() {
 
 	// Add workspace and collection creation/removal
 	addWorkspaceBtn := widget.NewButton("+ Workspace", func() {
-		dialog.ShowEntryDialog("New Workspace", "Enter workspace name:", func(name string) {
-			if name == "" {
+		entry := widget.NewEntry()
+		form := dialog.NewForm("New Workspace", "Create", "Cancel", []*widget.FormItem{
+			widget.NewFormItem("Workspace Name", entry),
+		}, func(ok bool) {
+			if !ok || entry.Text == "" {
 				return
 			}
-			workspaces = append(workspaces, Workspace{Name: name, Collections: []Collection{}})
+			workspaces = append(workspaces, Workspace{Name: entry.Text, Collections: []Collection{}})
 			err := saveWorkspaces(workspaces)
 			if err == nil {
-				workspaceNames = append(workspaceNames, name)
+				workspaceNames = append(workspaceNames, entry.Text)
 				workspaceSelect.Options = workspaceNames
-				workspaceSelect.SetSelected(name)
+				workspaceSelect.SetSelected(entry.Text)
 			}
 		}, w)
+		form.Show()
 	})
 
 	addCollectionBtn := widget.NewButton("+ Collection", func() {
@@ -348,13 +507,16 @@ func main() {
 			dialog.ShowInformation("No Workspace", "Select a workspace first.", w)
 			return
 		}
-		dialog.ShowEntryDialog("New Collection", "Enter collection name:", func(name string) {
-			if name == "" {
+		entry := widget.NewEntry()
+		form := dialog.NewForm("New Collection", "Create", "Cancel", []*widget.FormItem{
+			widget.NewFormItem("Collection Name", entry),
+		}, func(ok bool) {
+			if !ok || entry.Text == "" {
 				return
 			}
 			for i, ws := range workspaces {
 				if ws.Name == workspaceSelect.Selected {
-					workspaces[i].Collections = append(workspaces[i].Collections, Collection{Name: name})
+					workspaces[i].Collections = append(workspaces[i].Collections, Collection{Name: entry.Text})
 					err := saveWorkspaces(workspaces)
 					if err == nil {
 						collectionList.Refresh()
@@ -362,6 +524,7 @@ func main() {
 				}
 			}
 		}, w)
+		form.Show()
 	})
 
 	// Import/Export Postman Collection
@@ -389,7 +552,11 @@ func main() {
 				} `json:"item"`
 			}
 			data, _ := ioutil.ReadAll(reader)
-			json.Unmarshal(data, &postman)
+			err = json.Unmarshal(data, &postman)
+			if err != nil {
+				dialog.ShowError(fmt.Errorf("Invalid JSON: %v", err), w)
+				return
+			}
 			if workspaceSelect.Selected == "" {
 				dialog.ShowInformation("No Workspace", "Select a workspace first.", w)
 				return
@@ -477,7 +644,10 @@ func main() {
 				return
 			}
 			defer writer.Close()
-			writer.Write(data)
+			_, err = writer.Write(data)
+			if err != nil {
+				dialog.ShowError(fmt.Errorf("Write error: %v", err), w)
+			}
 		}, w)
 	})
 
@@ -489,20 +659,19 @@ func main() {
 		workspaceSelect,
 		widget.NewLabelWithStyle("Collections", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 		container.NewVBox(collectionList),
+		widget.NewLabelWithStyle("Requests", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		container.NewVBox(requestList),
 		container.NewHBox(importBtn, exportBtn),
 		widget.NewSeparator(),
 		flowsLabel,
 	)
 
-	// Request Row: method, URL, Send button (URL entry with larger width)
+	// Request Row: method, URL, Send button (URL entry with larger width and resizable)
 	urlEntry.MultiLine = false
-	urlEntry.Wrapping = fyne.TextTruncate
-	requestRow := container.NewBorder(nil, nil, nil, sendBtn,
-		container.NewHBox(
-			methodSelect,
-			container.NewMax(urlEntry),
-		),
-	)
+	urlEntry.Wrapping = fyne.TextWrapOff
+	urlSplit := container.NewHSplit(methodSelect, urlEntry)
+	urlSplit.Offset = 0.15 // Start with method select smaller
+	requestRow := container.NewBorder(nil, nil, nil, sendBtn, urlSplit)
 
 	// Save/Load Row
 	saveLoadRow := container.NewHBox(
@@ -517,19 +686,25 @@ func main() {
 	requestTabs := container.NewAppTabs(headersTab, bodyTab)
 	requestTabs.SetTabLocation(container.TabLocationTop)
 
-	// Response Tabs (JSON, Preview, Visualize, JSONata)
-	jsonResponse.Wrapping = fyne.TextTruncate
+	// JSONata input row: make entry and button resizable
+	jsonataSplit := container.NewHSplit(jsonataEntry, jsonataBtn)
+	jsonataSplit.Offset = 0.8 // Entry gets most of the space
 	jsonataTab := container.NewTabItem("JSONata", container.NewVBox(
 		widget.NewLabelWithStyle("JSONata Query", fyne.TextAlignLeading, fyne.TextStyle{}),
-		container.NewHBox(jsonataEntry, jsonataBtn),
+		jsonataSplit,
 	))
-	responseTabs.Append(jsonataTab)
+	responseTabs = container.NewAppTabs(
+		container.NewTabItem("JSON", container.NewVBox(responseControls, jsonResponseScroller)),
+		container.NewTabItem("Preview", widget.NewLabel("Preview will appear here.")),
+		container.NewTabItem("Visualize", widget.NewLabel("Visualization will appear here.")),
+		jsonataTab,
+	)
 	responseTabs.SetTabLocation(container.TabLocationTop)
 
 	// Response Section
 	responseSection := container.NewVBox(
 		widget.NewLabelWithStyle("Response", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-		container.NewHBox(statusLabel),
+		// container.NewHBox(statusLabel),
 		headersBox,
 		responseTabs,
 	)
@@ -549,5 +724,6 @@ func main() {
 		container.NewVScroll(rightPane),
 	))
 	w.Resize(fyne.NewSize(2000, 1200))
+	urlEntry.Resize(fyne.NewSize(900, urlEntry.MinSize().Height)) // Set width after window is created
 	w.ShowAndRun()
 }
