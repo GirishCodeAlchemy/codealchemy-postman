@@ -86,6 +86,16 @@ func parseHeaders(headerStr string) http.Header {
 	return headers
 }
 
+// Format size in bytes, KB, or MB
+func formatSize(size int) string {
+	if size < 1024 {
+		return fmt.Sprintf("%d bytes", size)
+	} else if size < 1024*1024 {
+		return fmt.Sprintf("%.2f KB", float64(size)/1024.0)
+	}
+	return fmt.Sprintf("%.2f MB", float64(size)/(1024.0*1024.0))
+}
+
 func main() {
 	a := app.New()
 	w := a.NewWindow("Postman-Go (Fyne)")
@@ -368,10 +378,10 @@ func main() {
 		headersBox.SetText(headersStr)
 		// Set response meta info
 		respSize := len(respBody)
-		responseMeta.SetText(fmt.Sprintf("%d ms    Req: %.2f KB    Resp: %.2f KB",
+		responseMeta.SetText(fmt.Sprintf("%d ms    Req: %s    Resp: %s",
 			elapsed.Milliseconds(),
-			float64(reqSize)/1024.0,
-			float64(respSize)/1024.0,
+			formatSize(reqSize),
+			formatSize(respSize),
 		))
 		// Status code indicator with emoji and text (no color/style)
 		var statusText string
