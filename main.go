@@ -99,7 +99,7 @@ func formatSize(size int) string {
 
 func main() {
 	a := app.New()
-	w := a.NewWindow("Postman-Go (Fyne)")
+	w := a.NewWindow("codealchemyman)")
 
 	// HTTP method dropdown
 	methods := []string{"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}
@@ -135,45 +135,204 @@ func main() {
 
 	// Add response status, time, size display, and search/copy controls
 	responseMeta := widget.NewLabel("") // Will be set after each request
-	// responseStatus := widget.NewLabel("") // Color-coded status code
-	// Instead, use a colored rectangle and label for status
 	statusColor := canvas.NewRectangle(&color.NRGBA{0, 0, 0, 255})
 	statusColor.SetMinSize(fyne.NewSize(18, 18))
 	responseStatus := widget.NewLabel("")
-	responseStatusContainer := container.NewHBox(statusColor, responseStatus)
+	responseStatusContainer := container.NewHBox(statusColor, responseStatus, layout.NewSpacer(), responseMeta)
 
+	// Enhanced search functionality with highlighting and dynamic sizing
 	searchEntry := widget.NewEntry()
-	searchEntry.SetPlaceHolder("Search in response...")
-	copyBtn := widget.NewButton("Copy", func() {
-		w.Clipboard().SetContent(jsonResponse.Text)
-		dialog.ShowInformation("Copied", "Response copied to clipboard!", w)
-	})
-	searchBtn := widget.NewButton("Find", func() {
-		query := searchEntry.Text
+	searchEntry.SetPlaceHolder("Find in response...")
+	searchEntry.Resize(fyne.NewSize(200, searchEntry.MinSize().Height)) // Initial size
+
+	// Use icon buttons for search and copy (Postman style)
+	searchIcon := widget.NewButtonWithIcon("", theme.SearchIcon(), nil)
+	copyIcon := widget.NewButtonWithIcon("", theme.ContentCopyIcon(), nil)
+	prevIcon := widget.NewButtonWithIcon("", theme.NavigateBackIcon(), nil)
+	nextIcon := widget.NewButtonWithIcon("", theme.NavigateNextIcon(), nil)
+	clearIcon := widget.NewButtonWithIcon("", theme.CancelIcon(), nil)
+
+	// Variables to track search state
+	var currentSearchQuery string
+	var searchResults []int // Store all match positions
+	var currentMatchIndex int = -1
+	var originalText string // Store original text without highlighting
+
+	// Update button states and match count
+	updateSearchNav := func() {
+		if len(searchResults) > 0 && currentMatchIndex >= 0 {
+			prevIcon.Enable()
+			nextIcon.Enable()
+			clearIcon.Enable()
+		} else {
+			prevIcon.Disable()
+			nextIcon.Disable()
+			clearIcon.Disable()
+		}
+	}
+
+	// Highlight function (same as before, but always highlights all matches, and current is styled differently)
+	highlightText := func(text, query string, currentIdx int) string {
 		if query == "" {
+			return text
+		}
+		searchResults = []int{}
+		lowerText := strings.ToLower(text)
+		lowerQuery := strings.ToLower(query)
+		startPos := 0
+		for {
+			idx := strings.Index(lowerText[startPos:], lowerQuery)
+			if idx == -1 {
+				break
+			}
+			absoluteIdx := startPos + idx
+			searchResults = append(searchResults, absoluteIdx)
+			startPos = absoluteIdx + len(query)
+		}
+		if len(searchResults) == 0 {
+			return text
+		}
+		result := text
+		offset := 0
+		for i, matchPos := range searchResults {
+			start := matchPos + offset
+			end := start + len(query)
+			if end <= len(result) {
+				var highlighted string
+				if i == currentIdx {
+					highlighted = "【" + result[start:end] + "】" // Current match
+				} else {
+					highlighted = "〔" + result[start:end] + "〕" // Other matches
+				}
+				result = result[:start] + highlighted + result[end:]
+				offset += len(highlighted) - len(query)
+			}
+		}
+		return result
+	}
+
+	// Navigation logic
+	navigateToMatch := func(matchIndex int) {
+		if len(searchResults) == 0 || matchIndex < 0 || matchIndex >= len(searchResults) {
 			return
 		}
-		text := jsonResponse.Text
-		idx := strings.Index(strings.ToLower(text), strings.ToLower(query))
-		if idx >= 0 {
-			before := text[:idx]
-			row := strings.Count(before, "\n")
-			col := idx - strings.LastIndex(before, "\n") - 1
-			if strings.LastIndex(before, "\n") == -1 {
-				col = idx
-			}
-			jsonResponse.CursorRow = row
-			jsonResponse.CursorColumn = col
-			jsonResponse.Refresh()
-		} else {
-			dialog.ShowInformation("Not found", "Text not found in response.", w)
+		currentMatchIndex = matchIndex
+		if originalText != "" && currentSearchQuery != "" {
+			highlightedText := highlightText(originalText, currentSearchQuery, currentMatchIndex)
+			jsonResponse.SetText(highlightedText)
 		}
-	})
-	responseControls := container.NewHBox(
-		responseStatusContainer,
-		responseMeta,
-		layout.NewSpacer(),
-		searchEntry, searchBtn, copyBtn,
+		// Scroll to match (approximate)
+		matchPos := searchResults[matchIndex]
+		text := originalText
+		if text == "" {
+			text = jsonResponse.Text
+		}
+		before := text[:matchPos]
+		row := strings.Count(before, "\n")
+		jsonResponse.CursorRow = row
+		jsonResponse.CursorColumn = 0
+		jsonResponse.Refresh()
+		updateSearchNav()
+	}
+
+	// Search action
+	searchAction := func() {
+		query := strings.TrimSpace(searchEntry.Text)
+		if query == "" {
+			if originalText != "" {
+				jsonResponse.SetText(originalText)
+				originalText = ""
+			}
+			currentSearchQuery = ""
+			searchResults = []int{}
+			currentMatchIndex = -1
+			updateSearchNav()
+			return
+		}
+		if currentSearchQuery != query {
+			if originalText == "" {
+				originalText = jsonResponse.Text
+			}
+			currentSearchQuery = query
+			_ = highlightText(originalText, query, 0) // update searchResults
+			if len(searchResults) > 0 {
+				currentMatchIndex = 0
+				navigateToMatch(0)
+			} else {
+				jsonResponse.SetText(originalText)
+				currentMatchIndex = -1
+			}
+			updateSearchNav()
+		} else if len(searchResults) > 0 {
+			// Next match
+			nextIdx := (currentMatchIndex + 1) % len(searchResults)
+			navigateToMatch(nextIdx)
+		}
+	}
+
+	// Icon button callbacks
+	searchIcon.OnTapped = searchAction
+	searchEntry.OnSubmitted = func(_ string) { searchAction() }
+	prevIcon.OnTapped = func() {
+		if len(searchResults) == 0 {
+			return
+		}
+		prevIdx := currentMatchIndex - 1
+		if prevIdx < 0 {
+			prevIdx = len(searchResults) - 1
+		}
+		navigateToMatch(prevIdx)
+	}
+	nextIcon.OnTapped = func() {
+		if len(searchResults) == 0 {
+			return
+		}
+		nextIdx := (currentMatchIndex + 1) % len(searchResults)
+		navigateToMatch(nextIdx)
+	}
+	clearIcon.OnTapped = func() {
+		searchEntry.SetText("")
+		if originalText != "" {
+			jsonResponse.SetText(originalText)
+			originalText = ""
+		}
+		currentSearchQuery = ""
+		searchResults = []int{}
+		currentMatchIndex = -1
+		updateSearchNav()
+	}
+	copyIcon.OnTapped = func() {
+		textToCopy := originalText
+		if textToCopy == "" {
+			textToCopy = jsonResponse.Text
+		}
+		w.Clipboard().SetContent(textToCopy)
+		dialog.ShowInformation("Copied", "Response copied to clipboard!", w)
+	}
+
+	// Overlay search bar styled like Postman (floating, top right)
+	searchBarOverlay := container.NewHBox(
+		container.NewHBox(
+			searchEntry,
+			searchIcon,
+			prevIcon,
+			nextIcon,
+			clearIcon,
+			copyIcon,
+		),
+	)
+	searchBarOverlayBG := container.NewVBox(
+		canvas.NewRectangle(color.NRGBA{240, 240, 240, 220}),
+		container.NewHBox(layout.NewSpacer(), searchBarOverlay),
+	)
+	searchBarOverlayBG.Objects[0].Resize(fyne.NewSize(420, 44)) // Set overlay background size
+
+	// Place overlay above response area, top right
+	jsonResponseWithOverlay := container.NewStack(
+		jsonResponseScroller,
+		container.NewVBox(
+			container.NewHBox(layout.NewSpacer(), searchBarOverlayBG),
+		),
 	)
 
 	// Add response status and headers display
@@ -526,6 +685,11 @@ func main() {
 			// statusLabel.SetText("")
 			headersBox.SetText("")
 			responseMeta.SetText("")
+			// Reset search state on error
+			originalText = ""
+			currentSearchQuery = ""
+			searchResults = []int{}
+			currentMatchIndex = -1
 			return
 		}
 		for k, v := range headers {
@@ -540,6 +704,11 @@ func main() {
 			// statusLabel.SetText("")
 			headersBox.SetText("")
 			responseMeta.SetText("")
+			// Reset search state on error
+			originalText = ""
+			currentSearchQuery = ""
+			searchResults = []int{}
+			currentMatchIndex = -1
 			return
 		}
 		defer resp.Body.Close()
@@ -549,6 +718,11 @@ func main() {
 			// statusLabel.SetText("")
 			headersBox.SetText("")
 			responseMeta.SetText("")
+			// Reset search state on error
+			originalText = ""
+			currentSearchQuery = ""
+			searchResults = []int{}
+			currentMatchIndex = -1
 			return
 		}
 		// Try to pretty-print JSON
@@ -563,6 +737,12 @@ func main() {
 		} else {
 			jsonResponse.SetText(string(respBody))
 		}
+
+		// Reset search state when new response comes in
+		originalText = ""
+		currentSearchQuery = ""
+		searchResults = []int{}
+		currentMatchIndex = -1
 		// Status label (for headers panel)
 		// statusLabel.SetText(fmt.Sprintf("Status: %d %s", resp.StatusCode, resp.Status))
 		// Format response headers
@@ -910,8 +1090,14 @@ func main() {
 		widget.NewLabelWithStyle("JSONata Query", fyne.TextAlignLeading, fyne.TextStyle{}),
 		jsonataSplit,
 	))
+
+	// Response tabs with status container
+	jsonTabContent := container.NewVBox(
+		responseStatusContainer,
+		jsonResponseWithOverlay,
+	)
 	responseTabs := container.NewAppTabs(
-		container.NewTabItem("JSON", container.NewVBox(responseControls, jsonResponseScroller)),
+		container.NewTabItem("JSON", jsonTabContent),
 		container.NewTabItem("Preview", widget.NewLabel("Preview will appear here.")),
 		container.NewTabItem("Visualize", widget.NewLabel("Visualization will appear here.")),
 		jsonataTab,
