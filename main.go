@@ -1067,7 +1067,12 @@ func main() {
 	urlEntry.MultiLine = false
 	urlEntry.Wrapping = fyne.TextWrapOff
 	urlSplit := container.NewHSplit(methodSelect, urlEntry)
-	urlSplit.Offset = 0.15 // Start with method select smaller
+	urlSplit.Offset = 0.11 // Start with method select smaller
+
+	// Increase the size of the Send button
+	sendBtn.Importance = widget.HighImportance
+	sendBtn.Resize(fyne.NewSize(400, 44)) // Wider and taller
+
 	requestRow := container.NewBorder(nil, nil, nil, sendBtn, urlSplit)
 
 	// Save/Load Row
@@ -1122,10 +1127,12 @@ func main() {
 	)
 
 	// Main layout: horizontal split, sidebar and right pane
-	w.SetContent(container.NewHSplit(
+	split := container.NewHSplit(
 		container.NewVBox(sidebar),
 		container.NewVScroll(rightPane),
-	))
+	)
+	split.Offset = 0.11 // Sidebar width smaller than right pane
+	w.SetContent(split)
 	w.Resize(fyne.NewSize(2000, 1200))
 	urlEntry.Resize(fyne.NewSize(900, urlEntry.MinSize().Height)) // Set width after window is created
 	w.ShowAndRun()
