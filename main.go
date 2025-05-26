@@ -646,11 +646,23 @@ func main() {
 	// JSONata search UI
 	jsonataEntry := widget.NewEntry()
 	jsonataEntry.SetPlaceHolder("Enter JSONata expression (e.g. $.foo.bar)")
+	jsonataOutput := widget.NewMultiLineEntry()
+	jsonataOutput.SetPlaceHolder("JSONata output will appear here...")
+	jsonataOutput.SetMinRowsVisible(30)
+	jsonResponse.Wrapping = fyne.TextWrapBreak
+	jsonataOutput.Enable()
 	jsonataBtn := widget.NewButton("Apply JSONata", func() {
 		expr := jsonataEntry.Text
+		if expr == "" {
+			dialog.ShowInformation("No Expression", "Please enter a JSONata expression.", w)
+			return
+		}
 		var jsonData interface{}
-		err := json.Unmarshal([]byte(jsonResponse.Text), &jsonData)
-		if err != nil {
+		jsonText := originalText
+		if jsonText == "" {
+			jsonText = jsonResponse.Text
+		}
+		if err := json.Unmarshal([]byte(jsonText), &jsonData); err != nil {
 			dialog.ShowError(fmt.Errorf("Invalid JSON: %v", err), w)
 			return
 		}
@@ -660,7 +672,15 @@ func main() {
 			return
 		}
 		resStr, _ := json.MarshalIndent(res, "", "  ")
-		jsonResponse.SetText(string(resStr))
+		jsonataOutput.SetText(string(resStr))
+		// Optionally, do not overwrite the main response box
+		// jsonResponse.SetText(string(resStr))
+		// Reset search state after applying JSONata
+		originalText = jsonResponse.Text
+		currentSearchQuery = ""
+		searchResults = []int{}
+		currentMatchIndex = -1
+		updateSearchNav()
 	})
 
 	sendBtn.OnTapped = func() {
@@ -1093,7 +1113,9 @@ func main() {
 	jsonataSplit.Offset = 0.8 // Entry gets most of the space
 	jsonataTab := container.NewTabItem("JSONata", container.NewVBox(
 		widget.NewLabelWithStyle("JSONata Query", fyne.TextAlignLeading, fyne.TextStyle{}),
-		jsonataSplit,
+		container.NewHSplit(jsonataEntry, jsonataBtn),
+		widget.NewLabelWithStyle("Output", fyne.TextAlignLeading, fyne.TextStyle{}),
+		jsonataOutput,
 	))
 
 	// Response tabs with status container
